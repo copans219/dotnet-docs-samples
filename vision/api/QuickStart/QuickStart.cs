@@ -28,6 +28,44 @@ using Newtonsoft.Json;
 namespace GoogleCloudSamples
 {
 
+   public class TextBox
+   {
+      public int Index;
+      public string Description;
+      public Rectangle Rect;
+      public Point LowerRight;
+      public long Size;
+      public BoundingPoly Bounds;
+
+      public TextBox()
+      {
+
+      }
+
+      public TextBox(BoundingPoly bp, string description, int index)
+      {
+         Description = description;
+         Index = index;
+         Bounds = bp;
+         Debug.Assert(bp.Vertices.Count == 4);
+         int l = bp.Vertices.Min(x => x.X);
+         int r = bp.Vertices.Max(x => x.X);
+         int t = bp.Vertices.Min(x => x.Y);
+         int b = bp.Vertices.Max(x => x.Y);
+         Rect = new Rectangle(new Point(l, t), new Size(r - l, b - t));
+         LowerRight = new Point(r, b);
+         Size = Rect.Size.Height * Rect.Size.Width;
+      }
+
+      public override string ToString()
+      {
+         var d = Description;
+         d = d.Substring(0, d.Length > 25 ? 25 : d.Length).Replace("\r\n", @"\n");
+
+         return $"({Index}. {Size} {Rect},{Rect.Right},{Rect.Bottom} [{d}] {Description.Length})";
+      }
+   }
+
    public class Box
    {
       public int Index;
@@ -62,28 +100,33 @@ namespace GoogleCloudSamples
          Size = Rect.Size.Height * Rect.Size.Width;
       }
 
-      public 
-      foreach (var kvp in boxes)
+      public bool FindParents(SortedList<long, Box> boxes)
       {
-         if (kvp.Key<Size)
-            break;
-         if (kvp.Value.Contains(this))
+         foreach (var kvp in boxes.Reverse())
          {
-            Parent = kvp.Value;
-            foreach (var b1 in kvp.Value.Children)
+            if (kvp.Key < Size)
+               break;
+            else if (kvp.Value == this)
+               continue;
+            if (kvp.Value.Contains(this))
             {
-               if (b1.Contains(this))
+               Parent = kvp.Value;
+               foreach (var b1 in kvp.Value.Children)
                {
-                  b1.Children.Add(this);
-                  if (b1.Size < Parent.Size)
+                  if (b1.Contains(this))
                   {
-                     Parent = b1;
+                     b1.Children.Add(this);
+                     if (b1.Size < Parent.Size)
+                     {
+                        Parent = b1;
+                     }
                   }
                }
-            }
 
-            break;
+               break;
+            }
          }
+         return Parent != null;
       }
 
       public bool Contains(Box b)
@@ -98,14 +141,17 @@ namespace GoogleCloudSamples
 
       public override string ToString()
       {
-         return $"({Index}. {Size} {Rect},{Rect.Right},{Rect.Bottom} [{Description}])";
+         var d = Description;
+         d = d.Substring(0, d.Length > 25 ? 25 : d.Length).Replace("\r\n", @"\n");
+
+         return $"({Index}. {Size} {Rect},{Rect.Right},{Rect.Bottom} [{d}] {Description.Length})";
       }
    }
 
 
    public class QuickStart
    {
-      private static NLog.Logger logger = NLog.LogManager.GetCurrentClassLogger();
+      private static readonly NLog.Logger logger = NLog.LogManager.GetCurrentClassLogger();
       /// <summary>
       /// Comparer for comparing two keys, handling equality as beeing greater
       /// Use this Comparer e.g. with SortedLists or SortedDictionaries, that don't allow duplicate keys
@@ -131,15 +177,137 @@ namespace GoogleCloudSamples
       }
       public static void Main(string[] args)
       {
+         var file = @"F:\Dropbox\Danny\Flood\OCR\Elevation Certificates New\99014600682018\fields\99014600682018_01_fields.jpg";
+         //fullTextMain(file);
+         textMain(file);
+      }
+      public static void fullTextMain(string file)
+      {
          // Instantiates a client
          var client = ImageAnnotatorClient.Create();
          // Load the image file into memory
-         var file = @"F:\Dropbox\OCR\Single\data\13864584_3_ocr~20181130_page3pdf.png";
-         var boxFile = file + ".boxes";
+         //var file = @"F:\Dropbox\OCR\Single\data\13864584_3_ocr~20181130_page3pdf.png";
+         var boxFile = file + ".para.json";
          var allBoxes = new List<Box>();
          var boxesBySize = new SortedList<long, Box>(new DuplicateKeyComparer<long>());
          int num = 0;
          if (!File.Exists(boxFile))
+         {
+            var image = Image.FromFile(file);
+
+            //CR\Single\13864584_3.jpg"); //wakeupcat.jpg");
+            //var response = client.DetectText(image);
+
+            // Performs label detection on the image file
+            /*
+            var responseObj = client.DetectLocalizedObjects(image);
+            foreach (var localizedObject in responseObj)
+            {
+               Console.Write($"\n{localizedObject.Name}");
+               Console.WriteLine($" (confidence: {localizedObject.Score})");
+               Console.WriteLine("Normalized bounding polygon vertices: ");
+   
+               foreach (var vertex
+                  in localizedObject.BoundingPoly.NormalizedVertices)
+               {
+                  Console.WriteLine($" - ({vertex.X}, {vertex.Y})");
+               }
+            }
+            */
+
+            var response = client.DetectDocumentText(image);
+            var serializer = new JsonSerializer { NullValueHandling = NullValueHandling.Ignore };
+
+            using (StreamWriter sw = new StreamWriter(boxFile))
+            using (JsonWriter writer = new JsonTextWriter(sw))
+            {
+               serializer.Serialize(writer, response);
+               // {"ExpiryDate":new Date(1230375600000),"Price":0}
+            }
+         }
+
+         var json = File.ReadAllText(boxFile);
+         var response2 = JsonConvert.DeserializeObject<TextAnnotation>(json);
+         int index = 0;
+         var pageRange = Enumerable.Range(0, response2.Pages.Count);
+         foreach (var pnum in pageRange)
+         {
+            var page = response2.Pages[pnum];
+            var blockRange = Enumerable.Range(0, page.Blocks.Count);
+            foreach (var bnum in blockRange)
+            {
+               var block = page.Blocks[bnum];
+               var paraRange = Enumerable.Range(0, block.Paragraphs.Count);
+               foreach(var paraNum in paraRange)
+               {
+                  index++;
+                  var paragraph = block.Paragraphs[paraNum];
+                  var paraText = String.Join(' ', paragraph.Words);
+                  var b = new TextBox(paragraph.BoundingBox, paraText, index);
+                  logger.Info(b.ToString());
+               }
+            }
+         }
+
+#if IGNORE
+      foreach (var page in response.Pages)
+               foreach( var block)
+            {
+               num++;
+               if (annotation.Description != null)
+               {
+                  if (annotation.BoundingPoly == null)
+                  {
+                     logger.Info($"{num}. {annotation.ToString()}");
+                  }
+                  else if (annotation.BoundingPoly.Vertices.Count == 4)
+                  {
+                     var b = new Box(annotation, allBoxes.Count);
+                     allBoxes.Add(b);
+                     logger.Info(
+                        $"{num}. {b} cs:{annotation.CalculateSize()} Mid:{annotation.Mid} Parent:{b.Parent?.Index}");
+                  }
+                  else
+                     logger.Info(
+                        $"{num}.Vertices: {annotation.BoundingPoly.Vertices.Count} cs:{annotation.CalculateSize()} {annotation.Description}");
+               }
+               else
+               {
+                  logger.Info($"{num}. {annotation.ToString()}");
+               }
+            }
+         }
+         boxesBySize = new SortedList<long, Box>(new DuplicateKeyComparer<long>());
+         var json = File.ReadAllText(boxFile);
+         var boxes = JsonConvert.DeserializeObject<List<Box>>(json);
+         foreach (var b in boxes)
+         {
+            num++;
+            b.Index = num;
+            logger.Info($"{b}");
+
+            boxesBySize.Add(b.Size, b);
+         }
+         logger.Info("-----------------------------------------------------");
+         foreach (var b in boxes)
+         {
+            b.FindParents(boxesBySize);
+            logger.Info(
+               $"{b} cs:{b.Annotation.CalculateSize()} Parent:{b.Parent?.Index}");
+         }
+#endif      
+      }
+      public static void textMain(string file)
+      {
+            // Instantiates a client
+         var client = ImageAnnotatorClient.Create();
+         // Load the image file into memory
+         //  var file = @"F:\Dropbox\OCR\Single\data\13864584_3_ocr~20181130_page3pdf.png";
+         var boxFile = file + ".boxes.json";
+         var allBoxes = new List<Box>();
+         var boxesBySize = new SortedList<long, Box>(new DuplicateKeyComparer<long>());
+         int num = 0;
+         if (!File.Exists(boxFile) || true)
          {
             var image = Image.FromFile(file);
 
@@ -194,6 +362,7 @@ namespace GoogleCloudSamples
             using (StreamWriter sw = new StreamWriter(boxFile))
             using (JsonWriter writer = new JsonTextWriter(sw))
             {
+               writer.Formatting = Formatting.Indented;
                serializer.Serialize(writer, allBoxes);
                // {"ExpiryDate":new Date(1230375600000),"Price":0}
             }
@@ -205,10 +374,18 @@ namespace GoogleCloudSamples
          var boxes = JsonConvert.DeserializeObject<List<Box>>(json);
          foreach (var b in boxes)
          {
-            logger.Info(
-               $"{num}. {b} cs:{b.Annotation.CalculateSize()} Mid:{b.Annotation.Mid} Parent:{b.Parent?.Index}");
-            boxesBySize.Add(b.Size, b);
+            num++;
+            b.Index = num;
+            logger.Info($"{b}");
 
+            boxesBySize.Add(b.Size, b);
+         }
+         logger.Info("-----------------------------------------------------");
+         foreach (var b in boxes)
+         {
+            b.FindParents(boxesBySize);
+            logger.Info(
+               $"{b} cs:{b.Annotation.CalculateSize()} Parent:{b.Parent?.Index}");
          }
       }
    }
